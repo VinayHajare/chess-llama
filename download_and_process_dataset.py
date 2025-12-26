@@ -83,6 +83,7 @@ class ChessDatasetProcessor:
         FIXED: Verifies checkmate via board simulation.
         FIXED: Robust PGN file finding.
         FIXED: Simplified PGN parsing loop (read_game directly, no _offset seek).
+        FIXED: Result moved to end of formatted game (moves first, then result).
         Requires 30min for 60K checkmate games
         USE THIS FOR: Maximum control, custom filtering, smaller datasets
         """
@@ -123,7 +124,8 @@ class ChessDatasetProcessor:
                             # FIXED: Verify checkmate
                             if board.is_checkmate():
                                 uci_moves = [move.uci() for move in game.mainline_moves()]
-                                formatted_game = f"{result} " + " ".join(uci_moves)
+                                # FIXED: Result at end
+                                formatted_game = " ".join(uci_moves) + f" {result}"
                                 batch_games.append(formatted_game)
                                 total_games += 1
                                 # FIXED: Save batch when it reaches 100k games
@@ -163,6 +165,7 @@ class ChessDatasetProcessor:
         - Proper memory management
         - Better error handling
         - Robust PGN finding
+        - Result moved to end of formatted game (moves first, then result).
         """
         pgn_extract_path = "/usr/games/pgn-extract"
         processed_dir = os.path.join(self.output_dir, "processed_uci")
@@ -203,7 +206,8 @@ class ChessDatasetProcessor:
                         if len(parts) >= 5 and parts[-1] in ['1-0', '0-1']:  # Min ~4 moves + result
                             result_str = parts[-1]
                             moves = parts[:-1]
-                            formatted_game = f"{result_str} " + " ".join(moves)
+                            # FIXED: Result at end
+                            formatted_game = " ".join(moves) + f" {result_str}"
                             batch_games.append(formatted_game)
                             total_games += 1
                             # Save batch when it reaches 100k games
@@ -262,8 +266,8 @@ class ChessDatasetProcessor:
             "validation": val_dataset
         })
         dataset.save_to_disk(os.path.join(self.output_dir, "hf_dataset"))
-        # Uncomment to push to hub:
-        # dataset.push_to_hub("VinayHajare/chess-llama-dataset")
+        
+        dataset.push_to_hub("VinayHajare/chess-llama-dataset")
         return dataset
 
     def run_full_pipeline(self, use_pgnextract=True):

@@ -14,7 +14,7 @@ class ChessDatasetProcessor:
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
 
-    def download_lichess_database(self, start_year=2020, start_month=6, end_year=2025, end_month=12):
+    def download_lichess_database(self, start_year=2020, start_month=6, end_year=2025, end_month=11):
         """
         Download Lichess elite database for specified years and months from https://database.nikonoel.fr/
         Files are zip archives containing .pgn files.

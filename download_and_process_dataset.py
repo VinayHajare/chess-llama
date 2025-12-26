@@ -82,7 +82,8 @@ class ChessDatasetProcessor:
         FIXED: Properly batches games without losing data.
         FIXED: Verifies checkmate via board simulation.
         FIXED: Robust PGN file finding.
-       
+        FIXED: Simplified PGN parsing loop (read_game directly, no _offset seek).
+        Requires 30min for 60K checkmate games
         USE THIS FOR: Maximum control, custom filtering, smaller datasets
         """
         raw_dir = os.path.join(self.output_dir, "raw")
@@ -106,36 +107,33 @@ class ChessDatasetProcessor:
             try:
                 with open(pgn_path, 'r') as f:
                     while True:
-                        headers = chess.pgn.read_headers(f)
-                        if headers is None:
+                        game = chess.pgn.read_game(f)
+                        if game is None:
                             break
-                        # FIXED: Check Result instead of Termination
+                        # FIXED: Check Result from game.headers
                         # Checkmate games have result 1-0 (white wins) or 0-1 (black wins)
                         # Draws (1/2-1/2) are excluded
-                        result = headers.get("Result", "")
+                        result = game.headers.get("Result", "")
                        
                         if result in ["1-0", "0-1"]:
-                            f.seek(headers._offset)
-                            game = chess.pgn.read_game(f)
-                            if game:
-                                uci_moves = []
-                                board = game.board()
-                                for move in game.mainline_moves():
-                                    uci_moves.append(move.uci())
-                                    board.push(move)
-                                # FIXED: Verify checkmate
-                                if board.is_checkmate():
-                                    formatted_game = f"{result} " + " ".join(uci_moves)
-                                    batch_games.append(formatted_game)
-                                    total_games += 1
-                                    # FIXED: Save batch when it reaches 100k games
-                                    if len(batch_games) >= 100000:
-                                        batch_num += 1
-                                        batch_file = os.path.join(processed_dir, f"games_batch_{batch_num}.txt")
-                                        with open(batch_file, 'w') as batch_f:
-                                            batch_f.write('\n'.join(batch_games))
-                                        print(f"Saved batch {batch_num} with {len(batch_games)} games (Total: {total_games})")
-                                        batch_games = [] # Clear batch after saving
+                            # Simulate board to verify checkmate
+                            board = game.board()
+                            for move in game.mainline_moves():
+                                board.push(move)
+                            # FIXED: Verify checkmate
+                            if board.is_checkmate():
+                                uci_moves = [move.uci() for move in game.mainline_moves()]
+                                formatted_game = f"{result} " + " ".join(uci_moves)
+                                batch_games.append(formatted_game)
+                                total_games += 1
+                                # FIXED: Save batch when it reaches 100k games
+                                if len(batch_games) >= 100000:
+                                    batch_num += 1
+                                    batch_file = os.path.join(processed_dir, f"games_batch_{batch_num}.txt")
+                                    with open(batch_file, 'w') as batch_f:
+                                        batch_f.write('\n'.join(batch_games))
+                                    print(f"Saved batch {batch_num} with {len(batch_games)} games (Total: {total_games})")
+                                    batch_games = [] # Clear batch after saving
             except Exception as e:
                 print(f"Error parsing {pgn_path}: {e}")
             # Clean up extracted PGN file
@@ -157,7 +155,7 @@ class ChessDatasetProcessor:
         This is significantly faster than Python-based parsing (10-50x speedup).
        
         USE THIS FOR: Large datasets (millions of games), production pipelines
-       
+        Requires 1min for 60k checkmate games
         FIXED:
         - Single pgn-extract call for checkmate + UCI
         - Added batching support
@@ -264,8 +262,8 @@ class ChessDatasetProcessor:
             "validation": val_dataset
         })
         dataset.save_to_disk(os.path.join(self.output_dir, "hf_dataset"))
-        
-        dataset.push_to_hub("VinayHajare/chess-llama-dataset")
+        # Uncomment to push to hub:
+        # dataset.push_to_hub("VinayHajare/chess-llama-dataset")
         return dataset
 
     def run_full_pipeline(self, use_pgnextract=True):

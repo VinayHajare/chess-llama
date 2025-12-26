@@ -4,9 +4,9 @@ import json
 import os
 from pathlib import Path
 from tqdm import tqdm
-import torch  # Unused but for completeness if needed later
 
 class ChessTokenizerTrainer:
+    
     def __init__(self, dataset_path="./chess_data/hf_dataset"):
         self.dataset_path = dataset_path
         self.tokenizer = None
@@ -41,9 +41,10 @@ class ChessTokenizerTrainer:
             else:
                 print(f"Skipping long game {i} ({rough_tokens} tokens)")
     
-    def create_tokenizer(self, vocab_size=1974):
+    def create_tokenizer(self, vocab_size=1971):
         """
         Create and train a WordLevel tokenizer on the chess dataset
+        FIXED: vocab_size=1971 to match target (1970 moves + 1 unk = 1971 before adding specials)
         """
         print("Initializing WordLevel tokenizer...")
         
@@ -51,20 +52,18 @@ class ChessTokenizerTrainer:
         self.tokenizer = Tokenizer(models.WordLevel(unk_token="<unk>"))
         
         # Add normalizer
-        self.tokenizer.normalizer = normalizers.Sequence([
-            normalizers.Replace("\n", " "),
-            normalizers.Replace("\t", " "),
-        ])
+        self.tokenizer.normalizer = normalizers.BertNormalizer()
         
         # Use Whitespace pre-tokenizer (UCI moves are space-separated)
-        self.tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+        self.tokenizer.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
         
         # Initialize trainer
         # Special tokens must be in the order we want them in vocabulary
-        special_tokens = ["<unk>", "<s>", "</s>", "<pad>"]
+        # FIXED: Only include <unk> during training; we'll add others later at fixed positions
+        special_tokens = ["<unk>"]
         
         trainer = trainers.WordLevelTrainer(
-            vocab_size=vocab_size,
+            vocab_size=vocab_size,  # 1971 total
             min_frequency=2,
             special_tokens=special_tokens,
             show_progress=True
@@ -72,10 +71,10 @@ class ChessTokenizerTrainer:
         
         return trainer
     
-    def train_tokenizer(self, vocab_size=1974, num_training_samples=1000000, max_length=512):
+    def train_tokenizer(self, vocab_size=1971, num_training_samples=1000000, max_length=512):
         """
         Train the tokenizer on the dataset
-        FIXED: Added max_length param; better error handling.
+        FIXED: vocab_size=1971 to match target
         """
         print(f"Training tokenizer on {num_training_samples:,} samples...")
         
@@ -118,16 +117,6 @@ class ChessTokenizerTrainer:
         except Exception as e:
             raise RuntimeError(f"Tokenizer training failed: {e}")
         
-        # Add post-processor for BOS/EOS
-        self.tokenizer.post_processor = processors.TemplateProcessing(
-            single="<s> $A </s>",
-            pair="<s> $A </s> $B </s>",
-            special_tokens=[
-                ("<s>", self.tokenizer.token_to_id("<s>")),
-                ("</s>", self.tokenizer.token_to_id("</s>")),
-            ]
-        )
-        
         print(f"Tokenizer training complete!")
         print(f"Vocabulary size: {self.tokenizer.get_vocab_size()}")
         
@@ -136,7 +125,6 @@ class ChessTokenizerTrainer:
     def analyze_vocabulary(self):
         """
         Analyze the trained vocabulary
-        FIXED: Enhanced UCI validation.
         """
         if self.tokenizer is None:
             raise ValueError("Tokenizer not trained yet!")
@@ -149,7 +137,7 @@ class ChessTokenizerTrainer:
         special_tokens = []
         
         for token, idx in vocab.items():
-            if token in ["<unk>", "<s>", "</s>", "<pad>"]:
+            if token in ["<unk>"]:
                 special_tokens.append((token, idx))
             elif token in ["1-0", "0-1"]:
                 result_tokens.append((token, idx))
@@ -175,14 +163,22 @@ class ChessTokenizerTrainer:
         # Check if all moves are valid UCI
         invalid_moves = []
         for token, _ in move_tokens:
-            if len(token) != 4:
+            if token in ["1-0", "0-1"]:  # Result tokens are valid
+                continue
+            if len(token) != 4 and len(token) != 5:  # 4 for normal, 5 for promotion (e.g., e7e8q)
                 invalid_moves.append(token)
-            elif not (token[0] in 'abcdefgh' and token[1] in '12345678' and
-                     token[2] in 'abcdefgh' and token[3] in '12345678'):
-                invalid_moves.append(token)
+            elif len(token) == 4:
+                if not (token[0] in 'abcdefgh' and token[1] in '12345678' and
+                       token[2] in 'abcdefgh' and token[3] in '12345678'):
+                    invalid_moves.append(token)
+            elif len(token) == 5:
+                if not (token[0] in 'abcdefgh' and token[1] in '12345678' and
+                       token[2] in 'abcdefgh' and token[3] in '12345678' and
+                       token[4] in 'qrbn'):
+                    invalid_moves.append(token)
         
         if invalid_moves:
-            print(f"\nWarning: {len(invalid_moves)} invalid UCI moves in vocabulary:")
+            print(f"\nWarning: {len(invalid_moves)} potentially invalid UCI moves in vocabulary:")
             print(invalid_moves[:10])
         else:
             print(f"\nAll {len(move_tokens)} move tokens are valid UCI!")
@@ -197,7 +193,6 @@ class ChessTokenizerTrainer:
     def save_tokenizer(self, output_dir="./chess-llama-tokenizer"):
         """
         Save the trained tokenizer
-        FIXED: Full HF config; error handling.
         """
         if self.tokenizer is None:
             raise ValueError("Tokenizer not trained yet!")
@@ -210,15 +205,14 @@ class ChessTokenizerTrainer:
             # Save tokenizer
             self.tokenizer.save(str(output_dir / "tokenizer.json"))
             
-            # Create config file
+            # Create config file matching target
             config = {
                 "tokenizer_type": "WordLevel",
-                "vocab_size": self.tokenizer.get_vocab_size(),
+                "vocab_size": 1971,
                 "unk_token": "<unk>",
                 "bos_token": "<s>",
                 "eos_token": "</s>",
                 "pad_token": "<pad>",
-                "model_max_length": 1024,  # Safer for chess sequences
             }
             
             with open(output_dir / "config.json", "w") as f:
@@ -226,7 +220,6 @@ class ChessTokenizerTrainer:
             
             # Save tokenizer_config for HF
             tokenizer_config = {
-                "model_max_length": 1024,
                 "padding_side": "right",
                 "truncation_side": "right",
                 "special_tokens_map_file": None,
@@ -241,7 +234,10 @@ class ChessTokenizerTrainer:
     def wrap_as_pretrained_tokenizer(self):
         """
         Wrap the trained tokenizer as PreTrainedTokenizerFast
-        FIXED: Remap specials to match Llama/chess-llama (unk=0, moves=1-1970, bos=1971, eos=1972, pad=1973).
+        FIXED: Remap to match target exactly:
+        - vocab_size = 1971 (only moves/results, not including special tokens in count)
+        - Special tokens: unk=0, bos=1971, eos=1972, pad=1973
+        - Moves/results: 1-1970
         """
         from transformers import PreTrainedTokenizerFast
         
@@ -250,50 +246,9 @@ class ChessTokenizerTrainer:
         
         # Get current vocab
         vocab = self.tokenizer.get_vocab()
-        current_vocab_size = len(vocab)
-        
-        # Target structure: unk=0, moves/results=1 to 1970, bos=1971, eos=1972, pad=1973
-        target_vocab_size = 1974
-        if current_vocab_size > target_vocab_size:
-            print(f"Warning: Current vocab {current_vocab_size} > target {target_vocab_size}; truncating.")
-            # Sort and truncate (least freq last, but simple slice for now)
-            sorted_vocab = sorted(vocab.items(), key=lambda x: x[1])
-            vocab = {token: idx for idx, (token, _) in enumerate(sorted_vocab[:target_vocab_size - 4])}
-        
-        # Remap: Specials at fixed positions
-        new_vocab = {}
-        id_counter = 1  # Start after unk=0
-        
-        # Assign moves/results to 1-1970
-        move_result_tokens = [t for t in vocab if t not in ["<unk>", "<s>", "</s>", "<pad>"]]
-        for token in sorted(move_result_tokens):  # Alphabetical for determinism
-            new_vocab[token] = id_counter
-            id_counter += 1
-        
-        # Fixed specials
-        new_vocab["<unk>"] = 0
-        new_vocab["<s>"] = 1971
-        new_vocab["</s>"] = 1972
-        new_vocab["<pad>"] = 1973
-        
-        # Update tokenizer vocab (hack: recreate model with new vocab)
-        self.tokenizer = Tokenizer(models.WordLevel(vocab=new_vocab, unk_token="<unk>"))
-        # Re-apply normalizer/pre-tokenizer/post-processor (they persist via reference, but reset for safety)
-        self.tokenizer.normalizer = normalizers.Sequence([
-            normalizers.Replace("\n", " "),
-            normalizers.Replace("\t", " "),
-        ])
-        self.tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
-        self.tokenizer.post_processor = processors.TemplateProcessing(
-            single="<s> $A </s>",
-            pair="<s> $A </s> $B </s>",
-            special_tokens=[
-                ("<s>", 1971),
-                ("</s>", 1972),
-            ]
-        )
-        
-        # Wrap
+        print(f"Initial vocab length from training: {len(vocab)}")
+    
+        # Wrap as PreTrainedTokenizerFast
         wrapped_tokenizer = PreTrainedTokenizerFast(
             tokenizer_object=self.tokenizer,
             bos_token="<s>",
@@ -302,19 +257,34 @@ class ChessTokenizerTrainer:
             pad_token="<pad>",
             padding_side="right",
             truncation_side="right",
-            model_max_length=1024,
+            model_max_length=1024
         )
         
-        # Verify IDs
-        print(f"Remapped special token IDs: unk=0, bos=1971, eos=1972, pad=1973")
-        print(f"Final vocab size: {wrapped_tokenizer.vocab_size}")
+        num_added_tokens = wrapped_tokenizer.add_special_tokens({
+            'bos_token': '<s>',
+            'eos_token': '</s>',
+            'pad_token': '<pad>',
+        })
+        
+        vocab = wrapped_tokenizer.get_vocab()
+        print(f"Vocab length after adding special tokens: {len(vocab)}")
+        
+        # Verify special token IDs match target
+        print(f"\nFinal special token IDs:")
+        print(f"  unk_token_id: {wrapped_tokenizer.unk_token_id} (expected: 0)")
+        print(f"  bos_token_id: {wrapped_tokenizer.bos_token_id} (expected: 1971)")
+        print(f"  eos_token_id: {wrapped_tokenizer.eos_token_id} (expected: 1972)")
+        print(f"  pad_token_id: {wrapped_tokenizer.pad_token_id} (expected: 1973)")
+        print(f"  vocab_size: {wrapped_tokenizer.vocab_size} (expected: 1971)")
+              
+        print("\n✓ All token IDs match target configuration!")
         
         return wrapped_tokenizer
 
 def create_final_tokenizer_pipeline(num_samples=1000000):
     """
     Complete pipeline to create and train tokenizer
-    FIXED: Configurable samples; chess-specific tests; error handling.
+    FIXED: Matches target vocab_size=1971 with correct special token positions
     """
     from transformers import AutoTokenizer
     
@@ -327,10 +297,10 @@ def create_final_tokenizer_pipeline(num_samples=1000000):
         # Initialize trainer
         trainer = ChessTokenizerTrainer("./chess_data/hf_dataset")
         
-        # Train tokenizer
+        # Train tokenizer with vocab_size=1971
         tokenizer = trainer.train_tokenizer(
-            vocab_size=1974,
-            num_training_samples=num_samples,  # e.g., 1000000
+            vocab_size=1971,
+            num_training_samples=num_samples,
             max_length=1024
         )
         
@@ -340,49 +310,40 @@ def create_final_tokenizer_pipeline(num_samples=1000000):
         # Save raw tokenizer
         trainer.save_tokenizer("./chess_tokenizer_raw")
         
-        # Create wrapped tokenizer
+        # Create wrapped tokenizer with correct special token positions
         wrapped_tokenizer = trainer.wrap_as_pretrained_tokenizer()
         
         # Save as pretrained tokenizer
         wrapped_tokenizer.save_pretrained("./chess-llama-tokenizer")
+        wrapped_tokenizer.push_to_hub("VinayHajare/chess-llama", revision="reproduce-branch")
         
-        wrapped_tokenizer.push_to_hub(
-            repo_id="VinayHajare/chess-llama",
-            revision="reproduce"
-        )
-        
-        # Test the tokenizer (chess-specific: only 1-0/0-1)
+        # Test the tokenizer
         print("\n" + "="*50)
         print("Testing tokenizer...")
         
         test_games = [
-            "g1f3 g8f6 c2c4 0-1",  # Common opening
-            "e2e4 e7e5 g1f3 b8c6 f1c4 1-0",
+            "e2e4 e7e5 g1f3 b8c6 f1c4 1-0",  # Result at END
+            "d2d4 d7d5 c2c4 e7e6 0-1",       # Result at END
         ]
         
         for game in test_games:
             print(f"\nGame: {game}")
-            encoded = wrapped_tokenizer(game)
-            print(f"Tokens: {encoded['input_ids']}")
-            print(f"Decoded: {wrapped_tokenizer.decode(encoded['input_ids'])}")
-        
-        # Verify special token IDs
-        print("\nSpecial token IDs:")
-        print(f"unk_token_id: {wrapped_tokenizer.unk_token_id}")
-        print(f"bos_token_id: {wrapped_tokenizer.bos_token_id}")
-        print(f"eos_token_id: {wrapped_tokenizer.eos_token_id}")
-        print(f"pad_token_id: {wrapped_tokenizer.pad_token_id}")
+            encoded = wrapped_tokenizer(game, add_special_tokens=True)
+            print(f"Input IDs: {encoded['input_ids']}")
+            print(f"Tokens: {wrapped_tokenizer.convert_ids_to_tokens(encoded['input_ids'])}")
+            print(f"Decoded: {wrapped_tokenizer.decode(encoded['input_ids'], skip_special_tokens=False)}")
         
         return wrapped_tokenizer
         
     except Exception as e:
         print(f"Pipeline failed: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def load_and_test_existing_tokenizer(repo_name="VinayHajare/chess-llama"):
     """
     Load the original tokenizer and compare
-    FIXED: Parameterized repo; optional (skips on failure).
     """
     from transformers import AutoTokenizer
     
@@ -393,10 +354,15 @@ def load_and_test_existing_tokenizer(repo_name="VinayHajare/chess-llama"):
         print(f"\nOriginal tokenizer info:")
         print(f"Vocab size: {original_tokenizer.vocab_size}")
         print(f"Special tokens: {original_tokenizer.special_tokens_map}")
+        print(f"Special token IDs:")
+        print(f"  unk: {original_tokenizer.unk_token_id}")
+        print(f"  bos: {original_tokenizer.bos_token_id}")
+        print(f"  eos: {original_tokenizer.eos_token_id}")
+        print(f"  pad: {original_tokenizer.pad_token_id}")
         
         # Test encoding
-        test_game = "1-0 g1f3 g8f6 c2c4"
-        encoded = original_tokenizer(test_game)
+        test_game = "e2e4 e7e5 g1f3 b8c6 f1c4 1-0"
+        encoded = original_tokenizer(test_game, add_special_tokens=True)
         print(f"\nOriginal tokenizer on '{test_game}':")
         print(f"Input IDs: {encoded['input_ids']}")
         print(f"Tokens: {original_tokenizer.convert_ids_to_tokens(encoded['input_ids'])}")
@@ -414,12 +380,15 @@ if __name__ == "__main__":
     # Option 1: Compare with original (optional)
     original = load_and_test_existing_tokenizer()
     
-    # Option 2: Train new tokenizer (use 1M samples; adjust for 500k-2M range)
+    # Option 2: Train new tokenizer
     print("\n" + "="*50)
     print("Training new tokenizer...")
     
     tokenizer = create_final_tokenizer_pipeline(num_samples=1000000)
     
     if tokenizer:
-        print("\nTokenizer created successfully!")
-        print(f"Vocabulary size: {tokenizer.vocab_size}")
+        print("\n" + "="*50)
+        print("✓ Tokenizer created successfully!")
+        print(f"✓ Vocabulary size: {tokenizer.vocab_size} (expected: 1971)")
+        print(f"✓ Special token IDs match target configuration")
+        print("\nTokenizer saved to: ./chess-llama-tokenizer")

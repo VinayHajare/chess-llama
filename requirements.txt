@@ -1,0 +1,12 @@
+torch
+transformers
+datasets
+accelerate
+tokenizers
+chess
+tqdm
+requests
+scikit-learn
+numpy
+pandas
+wandb 

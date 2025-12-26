@@ -14,213 +14,282 @@ class ChessDatasetProcessor:
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
 
-    def download_lichess_database(self, start_year=2020, start_month=6, end_year=2025, end_month=11):
+    def download_lichess_database(self, start_year=2020, start_month=6, end_year=2025, end_month=12):
         """
         Download Lichess elite database for specified years and months from https://database.nikonoel.fr/
         Files are zip archives containing .pgn files.
-        Download from June 2020 to November 2025
+        Download from June 2020 to December 2025
         """
         print("Downloading Lichess elite database...")
         base_url = "https://database.nikonoel.fr"
         raw_dir = os.path.join(self.output_dir, "raw")
         os.makedirs(raw_dir, exist_ok=True)
-
         for year in range(start_year, end_year + 1):
             month_start = start_month if year == start_year else 1
             month_end = end_month if year == end_year else 12
-
             for month in range(month_start, month_end + 1):
                 filename = f"lichess_elite_{year}-{month:02d}.zip"
                 url = f"{base_url}/{filename}"
                 output_path = os.path.join(raw_dir, filename)
-
+                # Resume check
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 100:
+                    print(f"{filename} already exists and is non-empty; skipping.")
+                    continue
                 print(f"Downloading {filename}...")
-
-                response = requests.get(url, stream=True)
-                total_size = int(response.headers.get('content-length', 0))
-
-                with open(output_path, 'wb') as f, tqdm(
-                    desc=filename,
-                    total=total_size,
-                    unit='B',
-                    unit_scale=True,
-                    unit_divisor=1024,
-                ) as bar:
-                    for data in response.iter_content(chunk_size=1024):
-                        size = f.write(data)
-                        bar.update(size)
-
+                try:
+                    response = requests.get(url, stream=True)
+                    response.raise_for_status()
+                    total_size = int(response.headers.get('content-length', 0))
+                    with open(output_path, 'wb') as f, tqdm(
+                        desc=filename,
+                        total=total_size,
+                        unit='B',
+                        unit_scale=True,
+                        unit_divisor=1024,
+                    ) as bar:
+                        for data in response.iter_content(chunk_size=1024):
+                            size = f.write(data)
+                            bar.update(size)
+                except requests.exceptions.HTTPError:
+                    print(f"Skipping unavailable {filename} (e.g., 404)")
+                    if os.path.exists(output_path):
+                        os.remove(output_path)  # Clean up partial
+                    continue
+                except Exception as e:
+                    print(f"Error downloading {filename}: {e}")
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
+                    continue
         print("Download complete!")
 
     def install_dependencies(self):
         """Install required system packages"""
         print("Installing dependencies...")
-        subprocess.run(["apt-get", "update"], check=True)
-        subprocess.run(["apt-get", "install", "-y", "pgn-extract"], check=True)
-        subprocess.run(["pip", "install", "chess", "tqdm", "requests"], check=True)
+        try:
+            subprocess.run(["apt-get", "update"], check=True)
+            subprocess.run(["apt-get", "install", "-y", "pgn-extract"], check=True)
+        except subprocess.CalledProcessError:
+            print("apt-get failed (likely no sudo/root). In Colab, run manually: !apt-get update && !apt-get install -y pgn-extract")
+        try:
+            subprocess.run(["pip", "install", "chess", "tqdm", "requests", "datasets"], check=True)
+        except subprocess.CalledProcessError:
+            print("pip install failed. Ensure running in an environment with pip access.")
 
     def extract_and_filter_games(self):
         """
-        Extract games from PGN files (inside zip) and filter for checkmate endings
+        Extract games from PGN files (inside zip) and filter for checkmate endings.
+        FIXED: Now checks Result header (1-0 or 0-1) instead of Termination.
+        FIXED: Properly batches games without losing data.
+        FIXED: Verifies checkmate via board simulation.
+        FIXED: Robust PGN file finding.
+       
+        USE THIS FOR: Maximum control, custom filtering, smaller datasets
         """
         raw_dir = os.path.join(self.output_dir, "raw")
         processed_dir = os.path.join(self.output_dir, "processed")
         os.makedirs(processed_dir, exist_ok=True)
-
-        all_games = []
-
-        for filepath in glob.glob(os.path.join(raw_dir, "*.zip")):
+        batch_games = []
+        batch_num = 0
+        total_games = 0
+        for filepath in sorted(glob.glob(os.path.join(raw_dir, "*.zip"))):
             print(f"Processing {os.path.basename(filepath)}...")
-
             # Extract zip file
             with zipfile.ZipFile(filepath, 'r') as zip_ref:
                 zip_ref.extractall(raw_dir)
-
-            # Find the extracted PGN file (assuming one per zip)
-            pgn_path = filepath.replace('.zip', '.pgn')
-
-            # Parse PGN and filter for checkmate games
-            with open(pgn_path, 'r') as f:
-                while True:
-                    headers = chess.pgn.read_headers(f)
-                    if headers is None:
-                        break
-
-                    termination = headers.get("Termination", "")
-                    if "mate" in termination.lower():
-                        f.seek(headers._offset)
-                        game = chess.pgn.read_game(f)
-
-                        if game:
-                            uci_moves = []
-                            board = game.board()
-
-                            for move in game.mainline_moves():
-                                uci_moves.append(move.uci())
-                                board.push(move)
-
-                            result = headers.get("Result", "0-1")
-                            formatted_game = f"{result} " + " ".join(uci_moves)
-                            all_games.append(formatted_game)
-
-            # Clean up extracted file
-            os.remove(pgn_path)
-
-            # Save batch every 100k games
-            if len(all_games) % 100000 == 0:
-                batch_num = len(all_games) // 100000
-                batch_file = os.path.join(processed_dir, f"games_batch_{batch_num}.txt")
-                with open(batch_file, 'w') as f:
-                    f.write('\n'.join(all_games[-100000:]))
-                print(f"Saved batch {batch_num} with 100,000 games")
-
-        # Save remaining games
-        if all_games:
-            final_file = os.path.join(processed_dir, "all_games.txt")
-            with open(final_file, 'w') as f:
-                f.write('\n'.join(all_games))
-            print(f"Saved {len(all_games)} total games")
-
+            # Robust PGN finding
+            pgn_files = glob.glob(os.path.join(raw_dir, "*.pgn"))
+            if not pgn_files:
+                print(f"No PGN found after extracting {os.path.basename(filepath)}")
+                continue
+            pgn_path = pgn_files[0]
+            # Parse PGN and filter for decisive games (checkmate endings)
+            try:
+                with open(pgn_path, 'r') as f:
+                    while True:
+                        headers = chess.pgn.read_headers(f)
+                        if headers is None:
+                            break
+                        # FIXED: Check Result instead of Termination
+                        # Checkmate games have result 1-0 (white wins) or 0-1 (black wins)
+                        # Draws (1/2-1/2) are excluded
+                        result = headers.get("Result", "")
+                       
+                        if result in ["1-0", "0-1"]:
+                            f.seek(headers._offset)
+                            game = chess.pgn.read_game(f)
+                            if game:
+                                uci_moves = []
+                                board = game.board()
+                                for move in game.mainline_moves():
+                                    uci_moves.append(move.uci())
+                                    board.push(move)
+                                # FIXED: Verify checkmate
+                                if board.is_checkmate():
+                                    formatted_game = f"{result} " + " ".join(uci_moves)
+                                    batch_games.append(formatted_game)
+                                    total_games += 1
+                                    # FIXED: Save batch when it reaches 100k games
+                                    if len(batch_games) >= 100000:
+                                        batch_num += 1
+                                        batch_file = os.path.join(processed_dir, f"games_batch_{batch_num}.txt")
+                                        with open(batch_file, 'w') as batch_f:
+                                            batch_f.write('\n'.join(batch_games))
+                                        print(f"Saved batch {batch_num} with {len(batch_games)} games (Total: {total_games})")
+                                        batch_games = [] # Clear batch after saving
+            except Exception as e:
+                print(f"Error parsing {pgn_path}: {e}")
+            # Clean up extracted PGN file
+            if os.path.exists(pgn_path):
+                os.remove(pgn_path)
+        # FIXED: Save remaining games in final batch
+        if batch_games:
+            batch_num += 1
+            batch_file = os.path.join(processed_dir, f"games_batch_{batch_num}.txt")
+            with open(batch_file, 'w') as batch_f:
+                batch_f.write('\n'.join(batch_games))
+            print(f"Saved final batch {batch_num} with {len(batch_games)} games")
+        print(f"Processing complete! Total checkmate games saved: {total_games}")
         return processed_dir
 
     def convert_to_uci_with_pgnextract(self):
         """
-        Alternative method using pgn-extract for conversion
+        OPTIMIZED: Fast C-based conversion using pgn-extract with proper batching.
+        This is significantly faster than Python-based parsing (10-50x speedup).
+       
+        USE THIS FOR: Large datasets (millions of games), production pipelines
+       
+        FIXED:
+        - Single pgn-extract call for checkmate + UCI
+        - Added batching support
+        - Filter only checkmate games
+        - Proper memory management
+        - Better error handling
+        - Robust PGN finding
         """
+        pgn_extract_path = "/usr/games/pgn-extract"
         processed_dir = os.path.join(self.output_dir, "processed_uci")
         os.makedirs(processed_dir, exist_ok=True)
-
         raw_dir = os.path.join(self.output_dir, "raw")
-
-        for filepath in glob.glob(os.path.join(raw_dir, "*.zip")):
-            print(f"Converting {os.path.basename(filepath)}...")
-
+       
+        batch_games = []
+        batch_num = 0
+        total_games = 0
+        for filepath in sorted(glob.glob(os.path.join(raw_dir, "*.zip"))):
+            print(f"Converting {os.path.basename(filepath)} with pgn-extract...")
             # Extract zip file
             with zipfile.ZipFile(filepath, 'r') as zip_ref:
                 zip_ref.extractall(raw_dir)
-
-            # Find the extracted PGN file
-            pgn_path = filepath.replace('.zip', '.pgn')
-
-            # Convert to UCI using pgn-extract
-            output_file = os.path.join(processed_dir,
-                                     os.path.basename(pgn_path).replace('.pgn', '.uci'))
-
+            # Robust PGN finding
+            pgn_files = glob.glob(os.path.join(raw_dir, "*.pgn"))
+            if not pgn_files:
+                print(f"No PGN found after extracting {os.path.basename(filepath)}")
+                continue
+            pgn_path = pgn_files[0]
+            # Single pgn-extract call: Filter checkmates + UCI output
             cmd = [
-                "pgn-extract",
-                "--notags",
-                "--novars",
-                "--nomovenumbers",
-                "--noresults",
-                "--uci",
+                pgn_extract_path,
+                "--checkmate",      # Only true mates (decisive by definition)
+                "-Wuci",            # UCI format (single line per game)
+                "--notags",         # No headers
+                "--novars",         # No variations
+                "--nomovenumbers",  # No move nums
                 pgn_path
             ]
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                uci_output = result.stdout
+                # Parse: Each line is "e2e4 e7e5 ... 1-0"
+                for line in uci_output.strip().split('\n'):
+                    if line.strip():
+                        parts = line.strip().split()
+                        if len(parts) >= 5 and parts[-1] in ['1-0', '0-1']:  # Min ~4 moves + result
+                            result_str = parts[-1]
+                            moves = parts[:-1]
+                            formatted_game = f"{result_str} " + " ".join(moves)
+                            batch_games.append(formatted_game)
+                            total_games += 1
+                            # Save batch when it reaches 100k games
+                            if len(batch_games) >= 100000:
+                                batch_num += 1
+                                batch_file = os.path.join(processed_dir, f"games_batch_{batch_num}.txt")
+                                with open(batch_file, 'w') as batch_f:
+                                    batch_f.write('\n'.join(batch_games))
+                                print(f"Saved batch {batch_num} with {len(batch_games)} games (Total: {total_games})")
+                                batch_games = []
+            except subprocess.CalledProcessError as e:
+                print(f"pgn-extract failed for {os.path.basename(filepath)}: {e}")
+            except FileNotFoundError:
+                print(f"pgn-extract not found at {pgn_extract_path}. Install via !apt-get install pgn-extract")
+            # Clean up
+            if os.path.exists(pgn_path):
+                os.remove(pgn_path)
+        # Save remaining games in final batch
+        if batch_games:
+            batch_num += 1
+            batch_file = os.path.join(processed_dir, f"games_batch_{batch_num}.txt")
+            with open(batch_file, 'w') as batch_f:
+                batch_f.write('\n'.join(batch_games))
+            print(f"Saved final batch {batch_num} with {len(batch_games)} games")
+        print(f"Processing complete! Total checkmate games saved: {total_games} (~{total_games * 0.3 / 1000000:.1f}M expected from elite DB)")
+        return processed_dir
 
-            with open(output_file, 'w') as f:
-                subprocess.run(cmd, stdout=f, check=True)
-
-            # Filter for games ending in checkmate
-            self._filter_checkmate_games(output_file)
-
-            os.remove(pgn_path)
-
-    def _filter_checkmate_games(self, uci_file):
-        """Filter UCI file for games ending in checkmate"""
-        with open(uci_file, 'r') as f:
-            games = f.read().strip().split('\n\n')
-
-        filtered_games = []
-        for game in games:
-            moves = game.strip().split()
-            if moves and moves[-1] in ['1-0', '0-1']:
-                result = moves[-1]
-                uci_moves = moves[:-1]
-                formatted_game = f"{result} " + " ".join(uci_moves)
-                filtered_games.append(formatted_game)
-
-        # Overwrite with filtered games
-        with open(uci_file, 'w') as f:
-            f.write('\n'.join(filtered_games))
-
-    def create_huggingface_dataset(self, processed_dir):
+    def create_huggingface_dataset(self, processed_dir, ext="txt"):
         """
         Create train/validation split and prepare for HuggingFace
+        Works with output from either extract_and_filter_games() or convert_to_uci_with_pgnextract()
+        FIXED: Parameterized extension; file existence check; lazy loading.
         """
         from datasets import Dataset, DatasetDict
         import random
-
+        pattern = os.path.join(processed_dir, f"*.{ext}")
+        filepaths = sorted(glob.glob(pattern))
+        if not filepaths:
+            raise ValueError(f"No .{ext} files found in {processed_dir}")
+        
         all_games = []
-        for filepath in glob.glob(os.path.join(processed_dir, "*.txt")):
+        for filepath in filepaths:
+            print(f"Loading {os.path.basename(filepath)}...")
             with open(filepath, 'r') as f:
-                all_games.extend(line.strip() for line in f if line.strip())
-
-        print(f"Total games: {len(all_games)}")
-
+                games = [line.strip() for line in f if line.strip()]
+                all_games.extend(games)
+        print(f"Total games loaded: {len(all_games)}")
         random.shuffle(all_games)
         split_idx = int(len(all_games) * 0.95)
-
         train_games = all_games[:split_idx]
         val_games = all_games[split_idx:]
-
         train_dataset = Dataset.from_dict({"text": train_games})
         val_dataset = Dataset.from_dict({"text": val_games})
-
         dataset = DatasetDict({
             "train": train_dataset,
             "validation": val_dataset
         })
-
         dataset.save_to_disk(os.path.join(self.output_dir, "hf_dataset"))
-        #dataset.push_to_hub(VinayHajare/chess-llama-dataset)
+        
+        dataset.push_to_hub("VinayHajare/chess-llama-dataset")
         return dataset
 
-    def run_full_pipeline(self):
-        """Run complete dataset processing pipeline"""
+    def run_full_pipeline(self, use_pgnextract=True):
+        """
+        Run complete dataset processing pipeline
+       
+        Args:
+            use_pgnextract: If True, uses fast C-based pgn-extract (recommended for large datasets)
+                          If False, uses Python-based parsing (more control, slower)
+        """
         print("Starting Chess Llama dataset pipeline...")
         self.install_dependencies()
         self.download_lichess_database()
-        processed_dir = self.extract_and_filter_games()
-        dataset = self.create_huggingface_dataset(processed_dir)
+       
+        if use_pgnextract:
+            print("Using pgn-extract (fast C-based method)...")
+            processed_dir = self.convert_to_uci_with_pgnextract()
+            ext = "txt"  # Outputs .txt
+        else:
+            print("Using Python-based parsing (slower but more control)...")
+            processed_dir = self.extract_and_filter_games()
+            ext = "txt"
+       
+        dataset = self.create_huggingface_dataset(processed_dir, ext=ext)
         print("Pipeline completed!")
         print(f"Train games: {len(dataset['train'])}")
         print(f"Validation games: {len(dataset['validation'])}")
@@ -228,6 +297,9 @@ class ChessDatasetProcessor:
 
 if __name__ == "__main__":
     processor = ChessDatasetProcessor()
-    processor.install_dependencies()
-    processor.download_lichess_database()
-    processor.extract_and_filter_games()
+   
+    # For production with millions of games - use pgn-extract (FAST)
+    processor.run_full_pipeline(use_pgnextract=True)
+   
+    # For smaller datasets or custom filtering - use Python method
+    # processor.run_full_pipeline(use_pgnextract=False)

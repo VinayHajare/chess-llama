@@ -235,40 +235,100 @@ class ChessDatasetProcessor:
         print(f"Processing complete! Total checkmate games saved: {total_games} (~{total_games * 0.3 / 1000000:.1f}M expected from elite DB)")
         return processed_dir
 
-    def create_huggingface_dataset(self, processed_dir, ext="txt"):
+    def create_huggingface_dataset(self, processed_dir, ext="txt", batch_size=5, val_split=0.05):
         """
-        Create train/validation split and prepare for HuggingFace
-        Works with output from either extract_and_filter_games() or convert_to_uci_with_pgnextract()
-        FIXED: Parameterized extension; file existence check; lazy loading.
+        Create train/validation split and prepare for HuggingFace with memory-efficient streaming.
+        Processes files in batches to stay within RAM limits.
+        
+        Args:
+            processed_dir: Directory containing the text files
+            ext: File extension (default "txt")
+            batch_size: Number of files to process at once (tune based on RAM)
+            val_split: Validation split ratio (default 0.05 for 5%)
         """
         from datasets import Dataset, DatasetDict
         import random
+        
         pattern = os.path.join(processed_dir, f"*.{ext}")
         filepaths = sorted(glob.glob(pattern))
+        
         if not filepaths:
             raise ValueError(f"No .{ext} files found in {processed_dir}")
         
-        all_games = []
+        print(f"Found {len(filepaths)} files")
+        
+        # Shuffle files for better train/val distribution
+        random.shuffle(filepaths)
+        
+        # Count total games first (lightweight pass)
+        print("Counting total games...")
+        total_games = 0
         for filepath in filepaths:
-            print(f"Loading {os.path.basename(filepath)}...")
             with open(filepath, 'r') as f:
-                games = [line.strip() for line in f if line.strip()]
-                all_games.extend(games)
-        print(f"Total games loaded: {len(all_games)}")
-        random.shuffle(all_games)
-        split_idx = int(len(all_games) * 0.95)
-        train_games = all_games[:split_idx]
-        val_games = all_games[split_idx:]
-        train_dataset = Dataset.from_dict({"text": train_games})
-        val_dataset = Dataset.from_dict({"text": val_games})
+                total_games += sum(1 for line in f if line.strip())
+        
+        print(f"Total games: {total_games:,}")
+        val_size = int(total_games * val_split)
+        train_size = total_games - val_size
+        
+        print(f"Train size: {train_size:,}, Val size: {val_size:,}")
+        
+        # Generator functions for streaming
+        def train_generator():
+            games_yielded = 0
+            for filepath in filepaths:
+                if games_yielded >= train_size:
+                    break
+                with open(filepath, 'r') as f:
+                    for line in f:
+                        if games_yielded >= train_size:
+                            break
+                        line = line.strip()
+                        if line:
+                            yield {"text": line}
+                            games_yielded += 1
+        
+        def val_generator():
+            games_skipped = 0
+            games_yielded = 0
+            for filepath in filepaths:
+                if games_yielded >= val_size:
+                    break
+                with open(filepath, 'r') as f:
+                    for line in f:
+                        if games_yielded >= val_size:
+                            break
+                        line = line.strip()
+                        if line:
+                            if games_skipped < train_size:
+                                games_skipped += 1
+                                continue
+                            yield {"text": line}
+                            games_yielded += 1
+        
+        # Create datasets from generators
+        print("Creating train dataset...")
+        train_dataset = Dataset.from_generator(train_generator)
+        
+        print("Creating validation dataset...")
+        val_dataset = Dataset.from_generator(val_generator)
+        
         dataset = DatasetDict({
             "train": train_dataset,
             "validation": val_dataset
         })
-        dataset.save_to_disk(os.path.join(self.output_dir, "hf_dataset"))
         
+        # Save to disk
+        save_path = os.path.join(self.output_dir, "hf_dataset")
+        print(f"Saving to disk: {save_path}")
+        dataset.save_to_disk(save_path)
+        
+        # Push to hub
+        print("Pushing to HuggingFace Hub...")
         dataset.push_to_hub("VinayHajare/chess-llama-dataset")
+        
         return dataset
+
 
     def run_full_pipeline(self, use_pgnextract=True):
         """

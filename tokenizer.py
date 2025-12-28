@@ -11,7 +11,7 @@ class ChessTokenizerTrainer:
         self.dataset_path = dataset_path
         self.tokenizer = None
         
-    def load_dataset_iterator(self, split="train", num_samples=None, max_length=512):
+    def load_dataset_iterator(self, split="train", num_samples=None):
         """
         Create an iterator that yields game strings from the dataset
         FIXED: Added max_length filter to avoid overly long games.
@@ -34,12 +34,8 @@ class ChessTokenizerTrainer:
         # Yield with length check (rough: split and count tokens)
         for i in range(len(data)):
             game = data[i]["text"]
-            # Pre-tokenize roughly: split on space, count parts (moves + result)
-            rough_tokens = len(game.split()) + 2  # + BOS/EOS
-            if rough_tokens <= max_length:
-                yield game
-            else:
-                print(f"Skipping long game {i} ({rough_tokens} tokens)")
+            yield game
+            
     
     def create_tokenizer(self, vocab_size=1971):
         """
@@ -50,6 +46,9 @@ class ChessTokenizerTrainer:
         
         # Initialize a WordLevel tokenizer
         self.tokenizer = Tokenizer(models.WordLevel(unk_token="<unk>"))
+        
+        # Enable truncation
+        self.tokenizer.enable_truncation(max_length=256)
         
         # Add normalizer
         self.tokenizer.normalizer = normalizers.BertNormalizer()
@@ -64,14 +63,12 @@ class ChessTokenizerTrainer:
         
         trainer = trainers.WordLevelTrainer(
             vocab_size=vocab_size,  # 1971 total
-            min_frequency=2,
             special_tokens=special_tokens,
-            show_progress=True
         )
         
         return trainer
     
-    def train_tokenizer(self, vocab_size=1971, num_training_samples=1000000, max_length=512):
+    def train_tokenizer(self, vocab_size=1971, num_training_samples=1000000):
         """
         Train the tokenizer on the dataset
         FIXED: vocab_size=1971 to match target
@@ -85,7 +82,6 @@ class ChessTokenizerTrainer:
         train_iterator = self.load_dataset_iterator(
             split="train", 
             num_samples=num_training_samples,
-            max_length=max_length
         )
         
         # Count total samples for progress bar
@@ -220,7 +216,6 @@ class ChessTokenizerTrainer:
             
             # Save tokenizer_config for HF
             tokenizer_config = {
-                "padding_side": "right",
                 "truncation_side": "right",
                 "special_tokens_map_file": None,
             }
@@ -255,9 +250,7 @@ class ChessTokenizerTrainer:
             eos_token="</s>",
             unk_token="<unk>",
             pad_token="<pad>",
-            padding_side="right",
             truncation_side="right",
-            model_max_length=1024
         )
         
         num_added_tokens = wrapped_tokenizer.add_special_tokens({
@@ -301,7 +294,6 @@ def create_final_tokenizer_pipeline(num_samples=1000000):
         tokenizer = trainer.train_tokenizer(
             vocab_size=1971,
             num_training_samples=num_samples,
-            max_length=1024
         )
         
         # Analyze vocabulary

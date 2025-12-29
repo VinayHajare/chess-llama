@@ -11,10 +11,7 @@ import gc
 from google.colab import drive
 
 def setup_colab():
-    """Setup Colab environment"""
-    # Mount Google Drive for saving models
-    drive.mount('/content/drive')
-    
+    """Setup Colab environment"""    
     # Install required packages
     !pip install -q transformers datasets accelerate peft bitsandbytes
     
@@ -28,7 +25,7 @@ def load_datasets(data_path="./chess_data/hf_dataset"):
         dataset = load_from_disk(data_path)
     else:
         # Load from HuggingFace Hub as fallback
-        dataset = load_dataset("lazy-guy12/checkmate2")
+        dataset = load_dataset("VinayHajare/chess-llama-dataset")
     
     print(f"Train size: {len(dataset['train'])}")
     print(f"Validation size: {len(dataset['validation'])}")
@@ -44,7 +41,7 @@ def prepare_model_and_tokenizer():
     if os.path.exists(tokenizer_path):
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
     else:
-        tokenizer = AutoTokenizer.from_pretrained("VinayHajare/chess-llama")
+        tokenizer = AutoTokenizer.from_pretrained("VinayHajare/chess-llama", revision="reproduce-branch")
     
     # Create model
     from model_config import create_chess_llama_model
@@ -114,7 +111,8 @@ def train_model_colab():
         lr_scheduler_type="cosine",
         report_to="tensorboard",
         save_total_limit=2,
-        push_to_hub=True,                
+        push_to_hub=True,
+        hub_revision="reproduce-branch"                
         dataloader_num_workers=2,
         remove_unused_columns=False,
     )
@@ -124,8 +122,8 @@ def train_model_colab():
         model=model,
         args=training_args,
         data_collator=data_collator,
-        train_dataset=tokenized_datasets["train"].select(range(100000)),  # Limit for Colab
-        eval_dataset=tokenized_datasets["validation"].select(range(1000)),
+        train_dataset=tokenized_datasets["train"],
+        eval_dataset=tokenized_datasets["validation"],
         tokenizer=tokenizer,
     )
     
@@ -138,6 +136,7 @@ def train_model_colab():
     save_path = "./chess-llama-final"
     trainer.save_model(save_path)
     tokenizer.save_pretrained(save_path)
+    trainer.push_to_hub("VinayHajare/chess-llama", revision="reproduce-branch")
         
     print("Training complete!")
     

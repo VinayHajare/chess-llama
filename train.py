@@ -5,7 +5,7 @@ from transformers import (
     TrainingArguments,
     DataCollatorForLanguageModeling,
 )
-from datasets import load_from_disk
+from datasets import load_from_disk, load_dataset
 import os
 import gc
 

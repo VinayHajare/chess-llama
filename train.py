@@ -8,13 +8,9 @@ from transformers import (
 from datasets import load_from_disk
 import os
 import gc
-from google.colab import drive
 
 def setup_colab():
     """Setup Colab environment"""    
-    # Install required packages
-    !pip install -q transformers datasets accelerate peft bitsandbytes
-    
     # Clean up memory
     torch.cuda.empty_cache()
     gc.collect()

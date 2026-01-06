@@ -8,13 +8,9 @@ from transformers import (
 from datasets import load_from_disk
 import os
 import gc
-from google.colab import drive
 
 def setup_colab():
     """Setup Colab environment"""    
-    # Install required packages
-    !pip install -q transformers datasets accelerate peft bitsandbytes
-    
     # Clean up memory
     torch.cuda.empty_cache()
     gc.collect()
@@ -112,7 +108,7 @@ def train_model_colab():
         report_to="tensorboard",
         save_total_limit=2,
         push_to_hub=True,
-        hub_revision="reproduce-branch"                
+        hub_revision="reproduce-branch",                
         dataloader_num_workers=2,
         remove_unused_columns=False,
     )

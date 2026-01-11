@@ -1,4 +1,4 @@
-# Chess Llama ♟️ - Reproduction Project
+# Chess Llama♟️- Reproduction Project
 
 A complete reproduction of the Chess Llama model from the [original blog post](https://lazy-guy.github.io/blog/chessllama/). This project trains a small LLaMA model (23M parameters) to play chess using UCI notation.
 
@@ -39,30 +39,23 @@ cd chess-llama
 pip install -r requirements.txt
 
 # Install system dependencies (Ubuntu/Debian)
-sudo apt-get install zstd pgn-extract
+sudo apt-get install pgn-extract
 ```
 
 ### Dataset Preparation
 
 ```bash
-# Download and process dataset (1 month for testing)
-python download_and_process_dataset.py --months 1
-
-# For full dataset (3M games, ~50GB):
-python download_and_process_dataset.py --years 2019 2020 2021 2022 2023
+# Download and process dataset
+python download_and_process_dataset.py
 ```
 
 ### Training
 
 ```bash
-# Create tokenizer
-python create_tokenizer.py
+# Create and tain tokenizer
+python tokenizer.py
 
-# Create model configuration
-python model_config.py
-
-# Train model (adjust batch size based on GPU memory)
-python train.py --batch-size 4 --gradient-accumulation 4
+python train.py
 ```
 
 ### Training on Multiple GPUs
@@ -78,15 +71,13 @@ accelerate launch train.py --multi-gpu
 ```
 chess-llama/
 ├── download_and_process_dataset.py  # Dataset pipeline
-├── create_tokenizer.py              # Tokenizer creation
+├── tokenizer.py              # Tokenizer creation
 ├── model_config.py                  # Model architecture
-├── train_colab.py                   # Training script
+├── train.py                   # Training script
 ├── chess-llama-colab.ipynb          # Colab notebook
 ├── requirements.txt                 # Python dependencies
-├── README.md                        # This file
-└── configs/                         # Configuration files
-    ├── model_config.json            # Model hyperparameters
-    └── training_args.json           # Training arguments
+└── README.md                        # This file
+                         
 ```
 
 ## Model Architecture
@@ -191,7 +182,7 @@ If you use this code in your research, please cite:
 ```bibtex
 @software{chessllama2024,
   title = {Chess Llama Reproduction},
-  author = {Your Name},
+  author = {Vinay Arjun Hajare},
   year = {2024},
   url = {https://github.com/VinayHajare/chess-llama}
 }

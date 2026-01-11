@@ -70,7 +70,7 @@ def train_model_colab():
     tokenized_datasets = dataset.map(
         tokenize_function,
         batched=True,
-        num_proc=4,
+        num_proc=8,
         remove_columns=["text"]
     )
     
@@ -86,31 +86,29 @@ def train_model_colab():
         hub_model_id="VinayHajare/chess-llama",
         overwrite_output_dir=True,
         num_train_epochs=5,
-        per_device_train_batch_size=4,    # Reduced for Colab memory
-        per_device_eval_batch_size=4,
-        gradient_accumulation_steps=4,    # Effective batch size = 4 * 4 = 16
-        warmup_steps=500,
+        per_device_train_batch_size=64,
+        warmup_steps=1000,
         weight_decay=0.01,
         logging_dir="./logs",
-        logging_steps=100,
-        eval_steps=500,
-        save_steps=1000,
-        evaluation_strategy="steps",
+        logging_steps=500,
+        eval_steps=2000,
+        save_steps=5000,
+        eval_strategy="steps",
         save_strategy="steps",
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
-        fp16=True,                        # Mixed precision for Colab
-        gradient_checkpointing=True,      # Save memory
+        fp16=True, 
         optim="adamw_torch",
         learning_rate=5e-4,
         lr_scheduler_type="cosine",
-        report_to="tensorboard",
+        report_to="none",
         save_total_limit=2,
         push_to_hub=True,
         hub_revision="reproduce-branch",                
-        dataloader_num_workers=2,
+        dataloader_num_workers=4,
         remove_unused_columns=False,
+        disable_tqdm=False,
     )
     
     # Initialize trainer
@@ -120,7 +118,7 @@ def train_model_colab():
         data_collator=data_collator,
         train_dataset=tokenized_datasets["train"],
         eval_dataset=tokenized_datasets["validation"],
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
     )
     
     # Train
